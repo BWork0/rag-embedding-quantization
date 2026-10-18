@@ -81,7 +81,7 @@ and a dequantize function that maps codes back to approximate fp32 values.
 """
 def quantize_int8(vectors: np.ndarray) -> tuple[np.ndarray, Callable[[np.ndarray], np.ndarray]]:
     lo, hi = vectors.min(axis=0), vectors.max(axis=0)
-    scale = (hi - lo) / 255.0
+    scale = np.where(hi > lo, (hi - lo) / 255.0, 1.0)  # a constant dimension would divide by zero
     codes = np.round((vectors - lo) / scale - 128).astype(np.int8)
 
     def dequantize(c: np.ndarray) -> np.ndarray:

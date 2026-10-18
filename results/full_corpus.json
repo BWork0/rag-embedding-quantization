@@ -1,0 +1,10 @@
+[
+  {"variant": "fp32 (baseline)", "stored_mb": 114.1, "memory_mb": 114.1, "latency_ms": 4.62, "doc_hit": 0.935, "section_hit": 0.801, "overlap": 1.0},
+  {"variant": "fp16", "stored_mb": 57.1, "memory_mb": 57.1, "latency_ms": 69.14, "doc_hit": 0.935, "section_hit": 0.801, "overlap": 0.998},
+  {"variant": "int8", "stored_mb": 28.5, "memory_mb": 28.5, "latency_ms": 88.49, "doc_hit": 0.934, "section_hit": 0.801, "overlap": 0.986},
+  {"variant": "binary", "stored_mb": 3.6, "memory_mb": 3.6, "latency_ms": 3.42, "doc_hit": 0.858, "section_hit": 0.664, "overlap": 0.456},
+  {"variant": "binary + int8 rescore (2x)", "stored_mb": 32.1, "memory_mb": 3.6, "latency_ms": 3.52, "doc_hit": 0.890, "section_hit": 0.719, "overlap": 0.614},
+  {"variant": "binary + int8 rescore (4x)", "stored_mb": 32.1, "memory_mb": 3.6, "latency_ms": 3.69, "doc_hit": 0.911, "section_hit": 0.755, "overlap": 0.728},
+  {"variant": "binary + int8 rescore (8x)", "stored_mb": 32.1, "memory_mb": 3.6, "latency_ms": 3.65, "doc_hit": 0.916, "section_hit": 0.773, "overlap": 0.813},
+  {"variant": "binary + int8 rescore (16x)", "stored_mb": 32.1, "memory_mb": 3.6, "latency_ms": 3.93, "doc_hit": 0.924, "section_hit": 0.787, "overlap": 0.874}
+]
