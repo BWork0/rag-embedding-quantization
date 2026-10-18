@@ -4,6 +4,7 @@ Usage:
     uv run ingest.py --max-docs 50
     uv run evaluate.py --queries 200
     uv run evaluate.py --recompute      # ignore the cached fp32 vectors
+    uv run evaluate.py --rescore-factors 2,4,8,16,32
 
 The model is the same for every variant; only how the chunk vectors are stored
 and searched changes. Query vectors stay fp32 (except for binary search).
@@ -23,7 +24,7 @@ from ingest import DATASET_DIR, INDEX_DIR
 
 EMBED_MODEL = "BAAI/bge-small-en-v1.5"
 TOP_K = 5
-RESCORE_FACTOR = 4  # binary search fetches TOP_K * RESCORE_FACTOR candidates to rescore
+RESCORE_FACTORS = (2, 4, 8, 16)  # binary search fetches TOP_K * factor candidates to rescore
 CACHE = INDEX_DIR / "embeddings_fp32.npy"
 CACHE_META = INDEX_DIR / "embeddings_fp32.json"
 
@@ -120,7 +121,9 @@ Build every variant from the fp32 vectors. Note that numpy has no fast int8 or
 fp16 matrix multiply, so the compact formats are cast to fp32 inside `search`;
 their latency here reflects numpy, not an optimized int8/popcount kernel.
 """
-def build_variants(fp32: np.ndarray) -> list[Variant]:
+def build_variants(
+    fp32: np.ndarray, rescore_factors: tuple[int, ...] = RESCORE_FACTORS
+) -> list[Variant]:
     fp16 = fp32.astype(np.float16)
     int8, dequantize = quantize_int8(fp32)
     binary = quantize_binary(fp32)
@@ -129,22 +132,25 @@ def build_variants(fp32: np.ndarray) -> list[Variant]:
         distance = np.bitwise_count(binary ^ np.packbits(query > 0)).sum(axis=1)
         return np.argsort(distance)[:k]
 
-    def search_binary_rescore(query: np.ndarray) -> np.ndarray:
-        candidates = search_binary(query, TOP_K * RESCORE_FACTOR)
-        scores = dequantize(int8[candidates]) @ query
-        return candidates[top_k(scores)]
+    def rescore_variant(factor: int) -> Variant:
+        def search(query: np.ndarray) -> np.ndarray:
+            candidates = search_binary(query, TOP_K * factor)
+            scores = dequantize(int8[candidates]) @ query
+            return candidates[top_k(scores)]
+
+        return Variant(
+            f"binary + int8 rescore ({factor}x)",
+            search,
+            binary.nbytes + int8.nbytes,
+            binary.nbytes,
+        )
 
     return [
         Variant("fp32 (baseline)", lambda q: top_k(fp32 @ q), fp32.nbytes, fp32.nbytes),
         Variant("fp16", lambda q: top_k(fp16.astype(np.float32) @ q), fp16.nbytes, fp16.nbytes),
         Variant("int8", lambda q: top_k(dequantize(int8) @ q), int8.nbytes, int8.nbytes),
         Variant("binary", lambda q: search_binary(q, TOP_K), binary.nbytes, binary.nbytes),
-        Variant(
-            f"binary + int8 rescore ({RESCORE_FACTOR}x)",
-            search_binary_rescore,
-            binary.nbytes + int8.nbytes,
-            binary.nbytes,
-        ),
+        *[rescore_variant(f) for f in rescore_factors],
     ]
 
 
@@ -192,6 +198,12 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--queries", type=int, default=200)
     parser.add_argument("--recompute", action="store_true")
+    parser.add_argument(
+        "--rescore-factors",
+        type=lambda s: tuple(int(x) for x in s.split(",")),
+        default=RESCORE_FACTORS,
+        help="comma-separated candidate multipliers for binary + int8 rescoring",
+    )
     args = parser.parse_args()
 
     chunks = json.loads((INDEX_DIR / "chunks.json").read_text(encoding="utf-8"))
@@ -205,7 +217,7 @@ def main() -> None:
     queries /= np.linalg.norm(queries, axis=1, keepdims=True)
 
     results, baseline_tops = [], None
-    for variant in build_variants(fp32):
+    for variant in build_variants(fp32, args.rescore_factors):
         result = score(variant, queries, chunks, items, baseline_tops)
         if baseline_tops is None:
             baseline_tops = [set(t.tolist()) for t in result["tops"]]
