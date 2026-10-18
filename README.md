@@ -18,7 +18,7 @@ Run the tests with `uv run pytest` (about a second; they use random vectors and 
 
 ## Method
 
-- **Model:** `BAAI/bge-small-en-v1.5` via fastembed (ONNX).
+- **Model:** `BAAI/bge-small-en-v1.5` via fastembed (ONNX). Note that fastembed's copy of this model has **fp16 weights** (all 149 weight tensors are FLOAT16, despite the `-Q` in its source repo name `Qdrant/bge-small-en-v1.5-onnx-Q`). The storage-format results above therefore start from vectors produced by an fp16 model, stored as fp32. The model-quantization comparison below uses the official fp32 export as its baseline.
 - **Chunking:** ~1500-character chunks with 200 overlap, paper title prepended before embedding.
 - **Retrieval:** cosine similarity, top 5.
 - **Metrics:** gold paper in top 5, gold section in top 5, index size, embedding time, query latency.
