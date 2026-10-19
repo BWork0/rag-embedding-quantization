@@ -9,7 +9,8 @@ Built on the retrieval pipeline of my [very-simple-rag](https://github.com/BWork
 ```sh
 uv sync
 uv run ingest.py                 # all 1000 papers (~740 MB) -> index/chunks.json (74,316 chunks)
-uv run evaluate.py --queries 1000
+uv run evaluate.py --queries 1000                       # storage formats
+uv run --group onnx onnx_quantize.py --queries 1000     # model quantization (embeds the corpus twice)
 ```
 
 Use `ingest.py --max-docs 50` and `--queries 200` for a quick run. Embedding the full corpus is slow on CPU (about 2.3 hours on the machine below); the fp32 vectors are cached in `index/`, so re-runs skip it.
@@ -18,13 +19,13 @@ Run the tests with `uv run pytest` (about a second; they use random vectors and 
 
 ## Method
 
-- **Model:** `BAAI/bge-small-en-v1.5` via fastembed (ONNX). Note that fastembed's copy of this model has **fp16 weights** (all 149 weight tensors are FLOAT16, despite the `-Q` in its source repo name `Qdrant/bge-small-en-v1.5-onnx-Q`). The storage-format results above therefore start from vectors produced by an fp16 model, stored as fp32. The model-quantization comparison below uses the official fp32 export as its baseline.
+- **Model:** `BAAI/bge-small-en-v1.5` via fastembed (ONNX). Note that fastembed's copy of this model has **fp16 weights** (all 149 weight tensors are FLOAT16, despite the `-Q` in its source repo name `Qdrant/bge-small-en-v1.5-onnx-Q`). The storage-format results below therefore start from vectors produced by an fp16 model, stored as fp32 (the model-quantization results show this made no difference to retrieval). The model-quantization comparison uses the official fp32 export as its baseline.
 - **Chunking:** ~1500-character chunks with 200 overlap, paper title prepended before embedding.
 - **Retrieval:** cosine similarity, top 5.
 - **Metrics:** gold paper in top 5, gold section in top 5, index size, embedding time, query latency.
 - **Same questions for every variant** (fixed seed).
 
-## Results
+## Results: storage formats
 
 Full corpus: 1000 papers, 74,316 chunks, 1000 benchmark questions. fp32 embedding took 8395 s. Machine: Windows 10 + WSL2, i7-11700K.
 
@@ -47,9 +48,7 @@ The raw numbers behind the table and plot are in [`results/full_corpus.json`](re
 
 Search latency (ms/query): fp32 4.62, fp16 69.14, int8 88.49, binary 3.42, binary + rescore 3.5–3.9 for every multiplier. fp16 and int8 are slow only because numpy has no fast fp16 or int8 matrix multiply, so they are cast to fp32 on every search; do not read that as a property of the formats. The rescore multipliers can be compared with each other (rescoring 80 candidates adds well under 1 ms over plain binary), but not with an optimized int8/popcount implementation.
 
-An ONNX int8 *model* variant is not measured yet (see roadmap).
-
-## Findings
+### Findings
 
 - **fp16 and int8 are free.** Section hit@5 is identical to fp32 (80.1%) at 2x and 4x smaller storage. With 1000 questions, one point is about 10 questions and the standard error is about 1.3 points, so differences of 0.1 are noise.
 - **Binary is cheap but lossy.** 32x smaller (3.6 MB), but section hit@5 drops from 80.1% to 66.4%, and its top 5 shares only 46% of chunks with fp32.
@@ -58,11 +57,29 @@ An ONNX int8 *model* variant is not measured yet (see roadmap).
 - **Corpus size matters.** On a 50-paper subset (3,809 chunks) binary looked much better (78.5% vs 85.0% for fp32, a 6.5-point gap). On the full corpus the gap is 13.7 points, because more chunks means more near neighbours for coarse 1-bit vectors to confuse.
 - **Limits:** one embedding model, one dataset, query vectors not quantized, and the rescore sweep stops at 16x (the curve was still rising slowly).
 
+## Results: model quantization (ONNX dynamic int8)
+
+The sections above change how vectors are *stored*. This one quantizes the embedding *model* itself: the official fp32 ONNX export of `bge-small-en-v1.5` is converted with onnxruntime's dynamic int8 quantization (weights stored as int8, activations quantized at run time). Each model embeds the full corpus and its own queries, and is scored with plain fp32 search over its own vectors.
+
+| Model | Model size (MB) | Embed time (s) | Chunks/s | Paper hit@5 | Section hit@5 | Top-5 overlap with fp32 model |
+|---|---|---|---|---|---|---|
+| fp32 (official ONNX export) | 133.1 | 8433 | 8.8 | 93.5% | 80.1% | 100.0% |
+| int8 (dynamic quantization) | 33.8 | 5172 | 14.4 | 93.2% | 80.4% | 71.1% |
+| fp16 (fastembed's model) | 66.5 | 8395 | 8.9 | 93.5% | 80.1% | 99.8% |
+
+Same machine and corpus as above (74,316 chunks, 1,000 questions), CPU only (`CPUExecutionProvider`). Raw numbers: [`results/model_quantization.json`](results/model_quantization.json). Reproduce with `uv run --group onnx onnx_quantize.py --queries 1000`; `--check` first verifies that my embedding code reproduces fastembed's vectors (mean cosine 1.00000) and reports the int8-vs-fp32 cosine (0.980 on 64 chunks).
+
+- **No detectable quality loss.** Section hit@5 is 80.4% for int8 vs 80.1% for fp32 and paper hit@5 is 93.2% vs 93.5%; these are 3 questions each way, inside the noise (about ±1.3 points at this sample size). This shows no loss was detected, not that int8 is better.
+- **3.9x smaller and 1.64x faster to embed here.** On a laptop CPU (Ryzen 5 3500U) the same int8 model was only about 1.1x faster in a small test (150 chunks), so the speed-up depends on the CPU. The workstation CPU has int8 vector instructions that the laptop CPU lacks; I did not isolate that as the cause.
+- **The rankings still change.** Only 71.1% of the int8 model's top-5 chunks are the same as fp32's (99.8% for the fp16 model), even though the gold hit rate is unchanged. This evaluation cannot say why; it only checks whether the gold paper and section appear in the top 5, not what else is there.
+- **The fp16 model matches fp32.** Hit rates are identical and the model embeds at the same speed on CPU, so the storage-format results above are not an artifact of starting from fp16 weights.
+- **Limits:** dynamic quantization only (no static calibration, no quantization-aware training), one model, CPU only, one run per model (no repeat to measure run-to-run variation in time), and the int8 model was not combined with the binary-vector formats.
+
 ## Roadmap
 
 - [x] Project scaffold, fp32 baseline eval
 - [x] Embedding storage quantization: fp16, int8, binary (with rescoring)
 - [x] Rescore multiplier sweep (2x, 4x, 8x, 16x)
-- [ ] Model quantization: ONNX int8
+- [x] Model quantization: ONNX int8
 - [x] Results table and quality-vs-size plot
 - [ ] Write-up of trade-offs and failure cases

@@ -1,0 +1,5 @@
+[
+  {"model": "fp32 (official ONNX export)", "model_mb": 133.1, "embed_seconds": 8433, "chunks_per_s": 8.8, "doc_hit": 0.935, "section_hit": 0.801, "overlap": 1.0},
+  {"model": "int8 (dynamic quantization of the fp32 export)", "model_mb": 33.8, "embed_seconds": 5172, "chunks_per_s": 14.4, "doc_hit": 0.932, "section_hit": 0.804, "overlap": 0.711},
+  {"model": "fp16 (fastembed)", "model_mb": 66.5, "embed_seconds": 8395, "chunks_per_s": 8.9, "doc_hit": 0.935, "section_hit": 0.801, "overlap": 0.998}
+]
