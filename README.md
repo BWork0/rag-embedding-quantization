@@ -4,6 +4,17 @@ How much retrieval quality do you lose when you quantize the embedding model of 
 
 Built on the retrieval pipeline of my [very-simple-rag](https://github.com/BWork0/very-simple-rag) project (self-contained here: nothing needs to be installed from it). Uses the [Open RAG Benchmark](https://huggingface.co/datasets/vectara/open_ragbench) (arXiv papers) and its gold labels to measure retrieval.
 
+## Summary
+
+Measured on 74,316 chunks of arXiv papers and 1,000 benchmark questions (metric: the gold section is in the top 5; fp32 scores 80.1%):
+
+- **int8 vectors:** 4x smaller, 80.1% (no detectable loss).
+- **Binary vectors + int8 rescoring (16x candidates):** 3.6 MB in RAM instead of 114 MB (32x less), 78.7%. Plain binary without rescoring scores 66.4%.
+- **int8 model (ONNX dynamic quantization):** 3.9x smaller, 1.64x faster to embed on the test CPU, 80.4% (no detectable loss).
+- **Side finding:** fastembed's "bge-small-en-v1.5" ships fp16 weights, not fp32.
+
+See [Trade-offs](#trade-offs-and-recommendations) for what to pick and what these results do not show.
+
 ## Setup
 
 ```sh
@@ -75,6 +86,31 @@ Same machine and corpus as above (74,316 chunks, 1,000 questions), CPU only (`CP
 - **The fp16 model matches fp32.** Hit rates are identical and the model embeds at the same speed on CPU, so the storage-format results above are not an artifact of starting from fp16 weights.
 - **Limits:** dynamic quantization only (no static calibration, no quantization-aware training), one model, CPU only, one run per model (no repeat to measure run-to-run variation in time), and the int8 model was not combined with the binary-vector formats.
 
+## Trade-offs and recommendations
+
+Pick by what is scarce. Numbers are from this benchmark (section hit@5, fp32 = 80.1%) and may differ on other data.
+
+| If you are constrained by... | Use | Evidence |
+|---|---|---|
+| Little: just want it smaller for free | int8 vectors (or fp16) | 4x (2x) smaller, hit rate identical to fp32 |
+| RAM, with a larger store (disk/SSD) available | binary vectors in RAM + int8 rescoring from disk, 16x candidates | 3.6 MB RAM, 78.7% (1.4 points below fp32); more candidates close more of the gap, with shrinking gains |
+| RAM, and quality barely matters (e.g. a coarse prefilter) | binary only | 32x smaller, 66.4% (13.7 points lost) |
+| Model size or embedding throughput | int8 model | 3.9x smaller, 1.64x faster here, no detectable loss; check on your own data |
+
+Things worth knowing before relying on this:
+
+- **At this scale none of it is needed.** The whole fp32 index is 114 MB. The savings matter at much larger corpora: by simple arithmetic (384 dims), 100 million chunks need about 154 GB in fp32, 38 GB in int8 and 4.8 GB as binary. This extrapolation is arithmetic, not a measurement.
+- **Binary quantization gets worse as the corpus grows.** On a 50-paper subset (3,809 chunks) it lost 6.5 points of section hit@5; on all 1000 papers it lost 13.7. I expect the gap to keep growing with corpus size, but I did not test larger corpora.
+- **Rescoring has a ceiling.** The int8 rescoring step can only reorder the candidates that the binary step returned. A gold chunk missing from the 5 × N binary candidates is lost no matter how good the rescoring is, which is why the curve flattens as N grows.
+- **Rescoring needs the int8 vectors stored too** (28.5 MB here, 32.1 MB total with the binary index). The RAM saving is real; the storage saving is not, and reading candidates from disk costs time that these numpy-based latency numbers do not capture.
+- **Latency numbers in this repo are not a speed comparison of the formats** (numpy has no fast fp16/int8 matrix multiply). Use them only to compare the rescoring multipliers with each other.
+- **The int8 model reorders rankings noticeably** (71% top-5 overlap with fp32) with no change in hit rate. That is not explained here; on a task where the exact top-5 matters beyond a gold-label check, test it separately.
+- **Statistical resolution:** 1,000 questions gives about ±1.3 points of standard error on an 80% rate, so differences under about 2 points should not be read as real.
+
+### Failure cases: not analyzed yet
+
+The evaluation reports aggregate hit rates only. I have not looked at which individual questions the quantized variants get wrong, whether they cluster by paper, section type or question wording, or whether the same questions fail for binary and for the int8 model. The explanations above (corpus-size effect, the rescoring ceiling) follow from how the methods work or from the 50-vs-1000-paper comparison; they were not confirmed by inspecting failures. A per-question analysis is on the roadmap.
+
 ## Roadmap
 
 - [x] Project scaffold, fp32 baseline eval
@@ -82,4 +118,6 @@ Same machine and corpus as above (74,316 chunks, 1,000 questions), CPU only (`CP
 - [x] Rescore multiplier sweep (2x, 4x, 8x, 16x)
 - [x] Model quantization: ONNX int8
 - [x] Results table and quality-vs-size plot
-- [ ] Write-up of trade-offs and failure cases
+- [x] Write-up of trade-offs
+- [ ] Per-question failure analysis (which questions each variant loses, and why)
+- [ ] Combine the int8 model with binary vectors, and test a larger corpus
